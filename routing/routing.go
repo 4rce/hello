@@ -10,8 +10,9 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
-	"time"
+
+	//"sync"
+	//"time"
 
 	//"github.com/gorilla/sessions"
 	"github.com/go-redis/redis/v8"
@@ -20,91 +21,6 @@ import (
 )
 
 var ctx = context.Background()
-
-// Timer struct for managing the timer
-type Timer struct {
-	duration  time.Duration
-	timer     *time.Timer
-	mu        sync.Mutex
-	db        *sql.DB       // Reference to the database
-	rdb       *redis.Client // Reference to Redis
-	isRunning bool
-}
-
-// NewTimer creates a new timer
-func NewTimer(duration time.Duration, db *sql.DB, rdb *redis.Client) *Timer {
-	return &Timer{
-		duration:  duration,
-		timer:     time.NewTimer(duration),
-		db:        db,
-		rdb:       rdb,
-		isRunning: false,
-	}
-}
-
-func (t *Timer) Start() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if !t.isRunning {
-		t.timer.Reset(t.duration)
-		t.isRunning = true
-		go t.sendUsers()
-	}
-}
-
-func (t *Timer) Stop() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.timer.Stop()
-	t.isRunning = false
-}
-
-func (t *Timer) sendUsers() {
-	<-t.timer.C
-	// Check the number of users and send them to the database
-	count, err := t.getUserCount()
-	if err != nil {
-		fmt.Println("Error getting user count:", err)
-		return
-	}
-
-	if count > 0 {
-		// Logic for sending users to the database
-		fmt.Println("Sending users to the database...")
-		// Add your logic for sending users and deleting from Redis
-	}
-	t.isRunning = false
-}
-
-func (t *Timer) getUserCount() (int, error) {
-	// Your logic for retrieving the number of users from Redis goes here
-	return 0, nil // Return the actual number of users
-}
-
-// Function to check and send users
-func (t *Timer) CheckAndSendUsers() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Stop the timer to check the number of users
-	t.Stop()
-
-	count, err := t.getUserCount()
-	if err != nil {
-		fmt.Println("Error getting user count:", err)
-		return
-	}
-
-	if count > 0 {
-		// Logic for sending users to the database
-		fmt.Println("Sending users to the database...")
-		// Add your logic for sending users and deleting from Redis
-	}
-
-	// Restart the timer after the check is completed
-	t.Start()
-}
 
 func batchInsertUsers(db *sql.DB, rdb *redis.Client) error {
 	// Get all user keys from Redis with the prefix "user"
@@ -149,23 +65,24 @@ func batchInsertUsers(db *sql.DB, rdb *redis.Client) error {
 	for i := 0; i < len(userKeys); i++ {
 		err := rdb.Del(ctx, userKeys[i]).Err()
 		if err != nil {
-			fmt.Println("Error deleting key:", err)
+			return fmt.Errorf("Error executing SQL insert: %v", err)
 		}
 	}
 
 	// Return nil if no errors occur
-	return nil
+	return err
 }
 
 // GetParams retrieves configuration parameters for various settings
 func GetParams(param string) int {
 	defaultCount := map[string]int{
-		"MEMORY":  64,  // Minimum amount of memory in MB (64 MB is the lowest usable value)
-		"THREADS": 2,   // Minimum number of threads (recommended to be at least 2 for multi-threading)
-		"TIME":    3,   // Minimum number of iterations (more than 2 provides some protection)
-		"KEYLEN":  32,  // Minimum length of the hash (recommended to be at least 32 bytes for security)
-		"USERS":   100, // Maximum number of users whose data will be stored in Redis before being sent to the database
-		"TIMER":   60,  // Timer
+		"MEMORY":                64,  // Minimum amount of memory in MB (64 MB is the lowest usable value)
+		"THREADS":               2,   // Minimum number of threads (recommended to be at least 2 for multi-threading)
+		"TIME":                  3,   // Minimum number of iterations (more than 2 provides some protection)
+		"KEYLEN":                32,  // Minimum length of the hash (recommended to be at least 32 bytes for security)
+		"MAX_USER_COUNT_BUFFER": 100, // Maximum number of users whose data will be stored in Redis before being sent to the database
+		"TIMER":                 60,  // Timer
+		"SALT_LEN":              16,
 	}
 	env := os.Getenv(param)
 	if env != "" {
@@ -195,7 +112,7 @@ func hashPassword(password string, salt []byte) []byte {
 
 // Routing sets up the routes for the server and initializes the timer
 func Routing(server *echo.Echo, psql *sql.DB, rdb *redis.Client) {
-	dataPushTimer := NewTimer(time.Duration(GetParams("TIMER"))*time.Second, psql, rdb)
+	//dataPushTimer := NewTimer(time.Duration(GetParams("TIMER"))*time.Second, psql, rdb)
 	server.GET("/", func(c echo.Context) error {
 		return c.String(http.StatusOK, "Hello, World!")
 	})
@@ -270,12 +187,10 @@ func Routing(server *echo.Echo, psql *sql.DB, rdb *redis.Client) {
 		return c.String(http.StatusUnauthorized, "Invalid credentials")
 	})
 
-	server.POST("/register", func(c echo.Context) error {
+	server.POST("/users", func(c echo.Context) error {
 		username := c.FormValue("username")
 		password := c.FormValue("password")
-		if dataPushTimer.isRunnung == false {
-			dataPushTimer.Start()
-		}
+
 		existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
 		if err != nil {
 			return err
@@ -286,8 +201,8 @@ func Routing(server *echo.Echo, psql *sql.DB, rdb *redis.Client) {
 		}
 
 		if !existPsql || !existRedis {
-
-			salt, err := generateSalt(16)
+			//Тут запукается таймер
+			salt, err := generateSalt(GetParams("SALT_LEN"))
 			if err != nil {
 				return err
 			}
@@ -296,19 +211,20 @@ func Routing(server *echo.Echo, psql *sql.DB, rdb *redis.Client) {
 			if err != nil {
 				return err
 			}
-
+			//Тут он становиться на паузу
 			userCount, err := rds.CheckUserCount(rdb)
 			if err != nil {
 				return err
 			}
-			if GetParams("USERS") >= userCount {
-				dataPushTimer.Stop()
+			if GetParams("MAX_USER_COUNT_BUFFER") >= userCount {
+				//dataPushTimer.Stop()
 				err = batchInsertUsers(psql, rdb)
 				if err != nil {
 					return err
 				}
+				//Тут стопорится
 			}
-
+			// Тут продалжает свою работу после паузы
 			return c.String(http.StatusOK, "User registered")
 
 		} else {
