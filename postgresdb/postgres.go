@@ -6,19 +6,32 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 var (
-	host     = os.Getenv("HOST")
-	port     = os.Getenv("PORT")
-	user     = os.Getenv("USER")
-	password = os.Getenv("PASSWORD")
-	dbname   = os.Getenv("DBNAME")
+	host     string
+	port     string
+	user     string
+	password string
+	dbname   string
 )
 
 func init() {
-	requiredEnvVars := []string{"HOST", "PORT", "USER", "PASSWORD", "DBNAME"}
+
+	err := godotenv.Load()
+	if err != nil {
+		return
+	}
+
+	host = os.Getenv("PSQL_HOST")
+	port = os.Getenv("PSQL_PORT")
+	user = os.Getenv("PSQL_USER")
+	password = os.Getenv("PSQL_PASSWORD")
+	dbname = os.Getenv("PSQL_DBNAME")
+
+	requiredEnvVars := []string{"PSQL_HOST", "PSQL_PORT", "PSQL_USER", "PSQL_PASSWORD", "PSQL_DBNAME"}
 	for _, envVar := range requiredEnvVars {
 		if os.Getenv(envVar) == "" {
 			panic(fmt.Sprintf("Environment variable %s is required but not set", envVar))
@@ -27,7 +40,7 @@ func init() {
 }
 
 func getDBConnectionString() string {
-	port, err := strconv.Atoi(os.Getenv("PORT"))
+	port, err := strconv.Atoi(os.Getenv("PSQL_PORT"))
 	if err != nil {
 		panic("Invalid PORT environment variable")
 	}
