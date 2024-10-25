@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 
 	//"sync"
 	//"time"
@@ -18,10 +19,10 @@ import (
 )
 
 var (
-	host     = os.Getenv("HOST")
-	port     = os.Getenv("PORT")
-	password = os.Getenv("PASSWORD")
-	dbname   = os.Getenv("DBNAME")
+	host     = os.Getenv("RDS_HOST")
+	port     = os.Getenv("RDS_PORT")
+	password = os.Getenv("RDS_PASSWORD")
+	dbname   = os.Getenv("RDS_DBNAME")
 )
 
 var ctx = context.Background()
@@ -33,6 +34,25 @@ type User struct {
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
 	Salt         string `json:"salt"`
+}
+
+func GetParams(param string) int {
+	defaultCount := map[string]int{
+		"MAX_USER_COUNT_BUFFER": 100, // Minimum amount of memory in MB (64 MB is the lowest usable value)
+	}
+	env := os.Getenv(param)
+	if env != "" {
+		value, err := strconv.Atoi(env)
+		if err == nil {
+			return value
+		}
+	}
+	if defaultValue, ok := defaultCount[param]; ok {
+		return defaultValue
+	}
+
+	// Если ключ не найден, возвращаем 0 или любое другое значение по умолчанию
+	return 0
 }
 
 func parseRedisKey(key string) []string {
@@ -114,11 +134,19 @@ func CheckLoginRedisExists(rdb *redis.Client, login string) (bool, error) {
 
 	exists, err := rdb.Exists(ctx, userKey).Result()
 	if err != nil {
+		fmt.Println(err)
+		fmt.Println("err!=nil")
 		return false, fmt.Errorf("Error checking user existence in Redis: %v", err)
 	}
 	if exists == 1 {
+		fmt.Println(exists)
 		return true, nil
+	} else if exists == 0 {
+		return false, nil
 	} else {
+		fmt.Println(err)
+		fmt.Println(exists)
+		fmt.Println("else")
 		return false, fmt.Errorf("Error checking user existence in Redis: %v", err)
 	}
 }
@@ -146,11 +174,20 @@ func GetUserKeys(rdb *redis.Client, prefix string) ([]string, error) {
 }
 
 func CheckUserCount(rdb *redis.Client) (int, error) {
-	exists, err := rdb.Exists(ctx, "user:*").Result()
-	if err != nil {
-		return 0, fmt.Errorf("Error checking user existence in Redis: %v", err)
+	var cursor uint64
+	var count int
+	for {
+		keys, nextCursor, err := rdb.Scan(ctx, cursor, "user:*", int64(GetParams("MAX_USER_COUNT_BUFFER"))).Result()
+		if err != nil {
+			return 0, fmt.Errorf("Error scanning keys in Redis: %v", err)
+		}
+		count += len(keys)
+		cursor = nextCursor
+		if cursor == 0 { // Завершение, если больше ключей нет
+			break
+		}
 	}
-	return int(exists), nil
+	return count, nil
 }
 
 // Вопрос безопасности? Если злоумышленик получит доступ к этой функции, то сможет тоскать все данные из системы

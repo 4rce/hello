@@ -1,37 +1,38 @@
 package main
 
 import (
-	"fmt"
+
 	//"hello/postgresdb"
 	//postgres "hello/postgresdb"
 	psql "hello/postgresdb"
 	redis "hello/redis"
 	routing "hello/routing"
 	"log"
-	"os"
-	"strings"
-	"time"
 
 	//"github.com/labstack/gommon/log"
-	"github.com/labstack/echo-contrib/echoprometheus"
+
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/echoprometheus"
-	"github.com/labstack/echo/v4/middleware"
-	"github.com/labstack/echo/v4/middleware.CORSConfig"
-	"golang.org/x/crypto/acme/autocert"
+	//"github.com/labstack/echo/v4/echoprometheus"
+	//"github.com/labstack/echo/v4/middleware.CORSConfig"
 )
 
 func main() {
-	psqlconn, err := psql.ConnectDB() //fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", postgresdb.host, port, user, password, dbname)
+	psqlconn, err := psql.ConnectDB() //fmt.Sprintcould not import github.com/labstack/echo/v4/echoprometheus (no required module provides package "github.com/labstack/echo/v4/echoprometheus")f("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", postgresdb.host, port, user, password, dbname)
+	if err != nil {
+		//return fmt.Errorf("Error parsing Redis key: %v", err)
+	}
 	defer psqlconn.Close()
 	rdb, err := redis.ConnectRedis()
+	if err != nil {
+		//return fmt.Errorf("Error parsing Redis key: %v", err)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			log.Fatalf("Ошибка при закрытии соединения Redis: %v", err)
 		}
 	}()
 	server := echo.New()
-	server.Use(middleware.SecureWithConfig(middleware.SecureConfig{
+	/*server.Use(middleware.SecureWithConfig(middleware.SecureConfig{
 		HSTSMaxAge:            9600,
 		ContentSecurityPolicy: "default-src 'self'",
 		//Skipper:               DefaultSkipper,
@@ -73,7 +74,7 @@ func main() {
 		Output: logFile,
 	}))
 	server.Use(echoprometheus.NewMiddlewareWithConfig(mwConfig))
-	server.GET("/metrics", echoprometheus.NewHandler())
+	server.GET("/metrics", echoprometheus.NewHandler())*/
 	routing.Routing(server, psqlconn, rdb)
 	server.Logger.Fatal(server.Start(":1323"))
 
