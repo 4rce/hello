@@ -46,40 +46,50 @@ func timer(db *sql.DB, rdb *redis.Client) error {
 
 func batchInsertUsers(db *sql.DB, rdb *redis.Client) error {
 	// Get all user keys from Redis with the prefix "user"
-	userKeys, err := rds.GetUserKeys(rdb, "user")
+	usersKeys, err := rds.GetUserKeys(rdb, "user")
 	if err != nil {
 		fmt.Println(err)
 		return fmt.Errorf("Error getting user keys from Redis: %v", err)
 	}
-	if len(userKeys) > 0 {
+	if len(usersKeys) > 0 {
 		// Initialize SQL query for inserting users
 		query := "INSERT INTO users (username, password_hash, salt) VALUES "
 		values := []interface{}{}
-
+		checkQuery := "SELECT COUNT(*) FROM users WHERE username = $1"
+		deleteQuery := "DELETE FROM users WHERE username = $1"
 		// Iterate over each user key
-		for i := 0; i < len(userKeys); i++ {
+		for i := 0; i < len(usersKeys); i++ {
 			// Get user data from Redis for each key
-			user, err := rds.GetRedisData(rdb, userKeys[i])
+			user, err := rds.GetRedisData(rdb, usersKeys[i])
 			if err != nil {
 				return fmt.Errorf("Error getting user data from Redis: %v", err)
 			}
-
 			// Parse the Redis key to extract the username (login)
-			login, err := rds.ParseIdRedis(userKeys[i])
+			login, err := rds.ParseIdRedis(usersKeys[i])
 			if err != nil {
 				return fmt.Errorf("Error parsing Redis key: %v", err)
 			}
-
+			// Check if user already exists in the PostgreSQL database
+			var count int
+			err = db.QueryRow(checkQuery, login).Scan(&count)
+			if err != nil {
+				return fmt.Errorf("Error checking user existence in PostgreSQL: %v", err)
+			}
+			// If user exists, delete it before inserting new data
+			if count > 0 {
+				_, err := db.Exec(deleteQuery, login)
+				if err != nil {
+					return fmt.Errorf("Error deleting existing user from PostgreSQL: %v", err)
+				}
+			}
 			// Add parameters to the SQL query for each user (username, password_hash, salt)
 			query += fmt.Sprintf("($%d, $%d, $%d)", 3*i+1, 3*i+2, 3*i+3)
-			if i < len(userKeys)-1 {
+			if i < len(usersKeys)-1 {
 				query += ", " // Add comma between rows, except for the last one
 			}
-
 			// Append the values to the list for insertion (login, password_hash, salt)
 			values = append(values, login, user["password_hash"], user["salt"])
 		}
-
 		// Execute the batch insert query with all the collected values
 		fmt.Println(query)
 		fmt.Println(values)
@@ -87,14 +97,14 @@ func batchInsertUsers(db *sql.DB, rdb *redis.Client) error {
 		if err != nil {
 			return fmt.Errorf("Error executing SQL insert: %v", err)
 		}
-		for i := 0; i < len(userKeys); i++ {
-			err := rdb.Del(ctx, userKeys[i]).Err()
+		// Delete user data from Redis after insert
+		for i := 0; i < len(usersKeys); i++ {
+			err := rdb.Del(ctx, usersKeys[i]).Err()
 			if err != nil {
 				return fmt.Errorf("Deleting rds data %v", err)
 			}
 		}
 	}
-
 	// Return nil if no errors occur
 	return err
 }
