@@ -1,93 +1,157 @@
-# backend
 
+# Transparency-AI - Backend
 
+Ce dépôt contient le code source du backend de Transparency-AI. Ce backend, développé en Go, implémente une API RESTful avec les fonctionnalités de gestion des utilisateurs (CRUD). Il utilise le framework **Echo** pour la gestion des requêtes HTTP, et l'authentification sécurisée via des cookies HTTP-only.
 
-## Getting started
+Ce backend est conçu pour être simple à installer et exécuter, notamment grâce à **Docker**. Les fonctionnalités clés incluent un CRUD utilisateur prêt à l'emploi et une documentation automatique des routes grâce à **GoDoc**.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+---
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Résumé de la feature
 
-## Add your files
+### Utilité
+Poser les bases d'un backend en Go avec un CRUD utilisateur, ce qui constitue un point de départ solide pour tout projet backend.
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+### Contexte
+Ceci est une fonctionnalité de base essentielle pour gérer les utilisateurs dans toute application moderne.
 
-```
-cd existing_repo
-git remote add origin https://gitlab.transparency-ai.fr/transparency/backend.git
-git branch -M main
-git push -uf origin main
-```
+### Objectif
+Avoir un backend fonctionnel et prêt à être livré, avec les éléments suivants :
+- Une API RESTful construite avec **Echo**.
+- Une gestion sécurisée des sessions via cookies HTTP-only.
+- Documentation automatique des routes grâce à **GoDoc**.
 
-## Integrate with your tools
+---
 
-- [ ] [Set up project integrations](https://gitlab.transparency-ai.fr/transparency/backend/-/settings/integrations)
+## Table des matières
 
-## Collaborate with your team
+- [Prérequis](#prérequis)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Lancer l'application](#lancer-lapplication)
+- [Tests](#tests)
+- [Contact](#contact)
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+---
 
-## Test and Deploy
+## Prérequis
 
-Use the built-in continuous integration in GitLab.
+Pour exécuter ce projet, vous aurez besoin de :
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+- **Docker** et **Docker Compose** (recommandé).
+- Si Docker n'est pas utilisé : **Go 1.20 ou plus**.
 
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+---
 
 ## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Cloner le repo
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+1. Ajouter votre clé SSH .pub dans la section "User Settings/SSH Keys"
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+2. Clonez ce dépôt en SSH :
+   ```bash
+   git clone git@gitlab.transparency-ai.fr:transparency/backend.git
+   cd backend
+   ```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+### Avec Docker (recommandé)
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+1. Construisez et démarrez l'application avec Docker Compose :
+   ```bash
+   docker-compose up --build
+   ```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+3. Une fois démarré, le backend est accessible à :
+   ```
+   http://localhost:8080
+   ```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+### Sans Docker (développement local)
 
-## License
-For open source projects, say how it is licensed.
+1. Installez les dépendances Go :
+   ```bash
+   go mod tidy
+   ```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+3. Lancez l'application :
+   ```bash
+   go run main.go
+   ```
+
+---
+
+## Configuration
+
+Les variables de configuration sont gérées via un fichier `.env` à la racine du projet.
+
+> **Note :** Assurez-vous de définir un `JWT_SECRET` fort pour sécuriser les tokens d'authentification.
+
+---
+
+## Lancer l'application
+
+### Avec Docker Compose
+
+Pour démarrer l'application avec Docker Compose, utilisez :
+```bash
+docker-compose up --build
+```
+
+Les logs du serveur seront affichés dans la console. Pour arrêter le serveur :
+```bash
+docker-compose down
+```
+
+### En local (développement)
+
+Si vous n’utilisez pas Docker, vous pouvez lancer l'application localement avec :
+```bash
+go run main.go
+```
+
+L'API sera accessible à `http://localhost:8080`.
+
+---
+
+### Description des dossiers
+
+- **routes/** : Contient les définitions des endpoints HTTP.
+- **controllers/** : Contient la logique métier associée à chaque route.
+- **models/** : Définit les structures des données (par exemple, utilisateurs).
+- **middleware/** : Contient les middlewares pour la gestion des cookies et de la sécurité.
+
+---
+
+## Tests
+
+Les tests sont écrits en Go et peuvent être exécutés via la commande suivante :
+
+```bash
+go test ./...
+```
+
+Si vous utilisez Docker, lancez les tests dans un conteneur isolé :
+```bash
+docker-compose -f docker-compose.test.yml up --abort-on-container-exit
+```
+
+---
+
+## Critères de réussite
+
+Pour considérer le backend comme terminé, les critères suivants doivent être remplis :
+- Le projet compile sans erreur.
+- L'API fonctionne avec le framework **Echo**.
+- L'authentification via cookies sécurisés est en place.
+- Les routes CRUD sont documentées avec **GoDoc**.
+
+---
+
+## Contact
+
+Pour toute question, suggestion ou problème, contactez-nous à [contact@transparency-ai.com](mailto:contact@transparency-ai.com).
+
+---
+
+Merci de contribuer à **Transparency-AI - Backend** !
