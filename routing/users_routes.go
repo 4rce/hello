@@ -33,7 +33,7 @@ func checkRdsUserPermission(ctx context.Context, rdb *redis.Client, username str
 	}
 }
 
-func checkPsqlUserPermission(db *sql.DB, username string, password string) (bool, error) {
+func checkPsqlUserPermission(ctx context.Context, db *sql.DB, username string, password string) (bool, error) {
 	// Запрос для получения соли и хэша пароля из базы данных
 	var salt string
 	var passwordHash string
@@ -147,10 +147,10 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 		if err != nil {
 			return fmt.Errorf("Error getting user data from Redis: %v", err)
 		}
-
+		//Стоит сделать соль меняемой!!!!!!!!!!!!!!!!!!!!!
 		// Hash the new password
 		hashedPassword := hashPassword(new_password, []byte(user["salt"]))
-
+		mu.Lock()
 		// Update user data in Redis
 		if err := rdb.HSet(ctx, userKey, map[string]interface{}{
 			"password_hash": string(hashedPassword),
@@ -160,8 +160,6 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 		}
 
 		// Lock access to user counter and check the limit
-		mu.Lock()
-		defer mu.Unlock()
 
 		userCount, err := rds.CheckUserCount(rdb)
 		if err != nil {
@@ -178,9 +176,10 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 			sended_ch <- true
 			fmt.Println("Batch insert complete")
 		}
+		mu.Unlock()
 		if existPsql {
 			// Check user permissions in PostgreSQL
-			user_permission, err := checkPsqlUserPermission(psql, username, password)
+			user_permission, err := checkPsqlUserPermission(ctx, psql, username, password)
 			if err != nil {
 				return c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
 			}
@@ -188,16 +187,16 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 			if !user_permission {
 				return c.String(http.StatusConflict, "No permission")
 			}
-
 			// Retrieve the salt from Redis if available, or define alternative behavior
 			userKey := fmt.Sprintf("user:%s", username)
 			user, err := rds.GetRedisData(rdb, userKey)
 			if err != nil {
 				return fmt.Errorf("Error getting user data from Redis: %v", err)
 			}
-
 			// Hash the new password
 			hashedPassword := hashPassword(new_password, []byte(user["salt"]))
+
+			// Нужно проверить, что по такие критериям пользователь один!!!!!!!!!!!!!
 
 			// SQL query for updating the row
 			query := "UPDATE users SET password_hash = $1, salt = $2 WHERE username = $3"
@@ -214,6 +213,10 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 
 			if rowsAffected == 0 {
 				return c.String(http.StatusConflict, "No rows were updated, username may not exist")
+			} else if rowsAffected == 1 {
+				return c.String(http.StatusConflict, "No rows were updated, username may not exist")
+			} else if rowsAffected > 1 {
+				return c.String(http.StatusConflict, "No rows were updated, username may not exist")
 			}
 
 			fmt.Println("User updated successfully in PostgreSQL")
@@ -225,7 +228,7 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 
 	} else if existPsql {
 		// Check user permissions in PostgreSQL
-		user_permission, err := checkPsqlUserPermission(psql, username, password)
+		user_permission, err := checkPsqlUserPermission(ctx, psql, username, password)
 		if err != nil {
 			return c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
 		}
@@ -259,6 +262,10 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 
 		if rowsAffected == 0 {
 			return c.String(http.StatusConflict, "No rows were updated, username may not exist")
+		} else if rowsAffected == 1 {
+			return c.String(http.StatusConflict, "No rows were updated, username may not exist")
+		} else if rowsAffected > 1 {
+			return c.String(http.StatusConflict, "No rows were updated, username may not exist")
 		}
 
 		fmt.Println("User updated successfully in PostgreSQL")
@@ -268,7 +275,7 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	return c.String(http.StatusConflict, "Username does not exist")
 }
 
-func users_list(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
+/*func users_list(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 
 	username := c.FormValue("username")
 	password := c.FormValue("password")
@@ -280,47 +287,29 @@ func users_list(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	if err != nil {
 		return err
 	}
-	if existRedis || existPsql {
+	if existRedis { userRdsPermission,err:=checkRdsUserPermission(ctx,rdb,username,password)}
+	if existPsql { userPsqlPermission,err:=checkPsqlUserPermission(ctx,psql,username,password)}
 
-		userKey := fmt.Sprintf("user:%s", username)
-		salt, err := rdb.HGet(ctx, userKey, "salt").Result()
 
-		if err == redis.Nil {
-
-			return fmt.Errorf("User %s not found", username)
-
-		} else if err != nil {
-
-			return fmt.Errorf("Error retrieving salt from Redis: %v", err)
-
+	if userRdsPermission || userPsqlPermission {
+		usersKeys, err := rdb.GetUserKeys(rdb, "user")
+		if err != nil {
+			return err
 		}
 
-		saltBytes := []byte(salt)
-		hashedPassword := hashPassword(password, saltBytes)
-		queriedHashedPassword, err := rdb.HGet(ctx, userKey, "password_hash").Result()
+		//    return c.JSON(http.StatusOK, items)
 
-		if err == redis.Nil {
-			return fmt.Errorf("Password hash not found for user %s", username)
-		} else if err != nil {
-			return fmt.Errorf("Error retrieving password hash from Redis: %v", err)
-		}
-
-		if queriedHashedPassword == string(hashedPassword) {
-
-			return nil
-		}
-
-		return fmt.Errorf("Incorrect password for user %s", username)
+		//return fmt.Errorf("Incorrect password for user %s", username)
 
 	} else {
 		return c.String(http.StatusConflict, "Username does not exist")
 
 	}
 
-	//return c.String(http.StatusUnauthorized, "Invalid credentials")
-}
+	return c.String(http.StatusUnauthorized, "Invalid credentials")
+}*/
 
-func user_delete(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
+/*func user_delete(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 
 	username := c.FormValue("username")
 	password := c.FormValue("password")
@@ -370,4 +359,4 @@ func user_delete(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	}
 
 	return c.String(http.StatusUnauthorized, "Invalid credentials")
-}
+}*/
