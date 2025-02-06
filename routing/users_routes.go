@@ -9,10 +9,15 @@ import (
 	rds "hello/redis"
 	"net/http"
 
-	//"github.com/gorilla/sessions"
 	"github.com/go-redis/redis/v8"
 	"github.com/labstack/echo/v4"
 )
+
+// type UserData struct {
+// 	Email string
+// 	Hash  string
+// 	Salt  string
+// }
 
 func checkRdsUserPermission(ctx context.Context, rdb *redis.Client, username string, password string) (bool, error) {
 	userKey := fmt.Sprintf("user:%s", username)
@@ -59,19 +64,42 @@ func checkPsqlUserPermission(ctx context.Context, db *sql.DB, username string, p
 }
 
 func user_register(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
+
+	chSended := make(chan bool)
+	chErrorPsql := make(chan error, 1)
+	chErrorRedis := make(chan error, 1)
+	chExistPsql := make(chan bool, 1)
+	chExistRedis := make(chan bool, 1)
+	chErrorTimer := make(chan error)
+
 	fmt.Println("Got post request")
 	username := c.FormValue("username")
 	password := c.FormValue("password")
-	existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
-	if err != nil {
-		return err
+	mu.Lock()
+	go func() {
+		existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
+		chExistPsql <- existPsql
+		chErrorPsql <- err
+
+	}()
+	go func() {
+		existRedis, err := rds.CheckLoginRedisExists(rdb, username)
+		chExistRedis <- existRedis
+		chErrorRedis <- err
+	}()
+	if err := <-chErrorPsql; err != nil {
+		return c.String(http.StatusInternalServerError, "Error checking PostgreSQL: "+err.Error())
 	}
-	existRedis, err := rds.CheckLoginRedisExists(rdb, username)
-	if err != nil {
-		return err
+
+	if err := <-chErrorRedis; err != nil {
+		return c.String(http.StatusInternalServerError, "Error checking Redis: "+err.Error())
 	}
+
+	existPsql := <-chExistPsql
+	existRedis := <-chExistRedis
+	mu.Unlock()
 	if !existPsql && !existRedis {
-		go timer(psql, rdb)
+		go timer(chErrorTimer, chSended, psql, rdb)
 		salt, err := generateSalt(GetParams("SALT_LEN"))
 		if err != nil {
 			return err
@@ -86,21 +114,15 @@ func user_register(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("Got buffer")
-		fmt.Println(userCount)
-		fmt.Println(int(GetParams("MAX_USER_COUNT_BUFFER")))
 		if int(GetParams("MAX_USER_COUNT_BUFFER")) <= userCount {
 			err = batchInsertUsers(psql, rdb)
 			if err != nil {
 				fmt.Println("Error batch")
 				return err
 			}
-			sended = true
-			sended_ch <- true
-			//Тут стопорится
+			chSended <- true
 		}
 		mu.Unlock()
-		// Тут продалжает свою работу после паузы
 		fmt.Println("registered")
 		return c.String(http.StatusOK, "User registered")
 
@@ -110,253 +132,265 @@ func user_register(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	}
 }
 
+// Тут бога нет, есть только две го рутины и один return. Думай как это решить.
 func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	username := c.FormValue("username")
 	password := c.FormValue("password")
 	new_password := c.FormValue("new_password")
+	ch := make(chan bool) // Channel for communication between goroutines
+	chPsqlReturn := make(chan error)
+	chRedisReturn := make(chan error)
+	mu.Lock()
+	// Check if the user exists in PostgreSQL
+	go func() {
+		existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
+		if err != nil {
+			ch <- false // Send error information to the channel
+
+		}
+		ch <- existPsql
+		if existPsql {
+			// Check user permissions in PostgreSQL
+			userPermission, err := checkPsqlUserPermission(ctx, psql, username, password)
+			if err != nil {
+				chPsqlReturn <- c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
+				return
+			}
+			if !userPermission {
+				chPsqlReturn <- c.String(http.StatusConflict, "No permission")
+				return
+			}
+
+			// Generate salt for the new password
+			salt := []byte{}
+			salt, err = generateSalt(GetParams("SALT_LEN"))
+			if err != nil {
+				return
+			}
+
+			// Hash the new password
+			hashedPassword := hashPassword(new_password, salt)
+
+			// Update user data in PostgreSQL
+			query := "UPDATE users SET password_hash = $1, salt = $2 WHERE username = $3"
+			_, err = psql.Exec(query, hashedPassword, salt, username)
+			if err != nil {
+				ch <- false
+			}
+
+			// Send success message
+			chPsqlReturn <- c.String(http.StatusOK, "User updated in PostgreSQL and cleared from Redis")
+		}
+	}()
+
+	// Check if the user exists in Redis
+	go func() {
+		// Check if the user exists in Redis
+		existRedis, err := rds.CheckLoginRedisExists(rdb, username)
+		if err != nil {
+
+		}
+		// Get the existence status from PostgreSQL via the channel
+		existPsql := <-ch
+		if existRedis && existPsql {
+			if err := rdb.Del(ctx, fmt.Sprintf("user:%s", username)).Err(); err != nil {
+				c.String(http.StatusConflict, fmt.Sprintf("Error deleting user data from Redis: %v", err))
+				return
+			}
+		} else if existRedis && !existPsql {
+			// Check user permissions in Redis
+			userPermission, err := checkRdsUserPermission(ctx, rdb, username, password)
+			if err != nil {
+				chRedisReturn <- c.String(http.StatusConflict, "Error checking Redis permissions")
+				return
+			}
+			if !userPermission {
+				chRedisReturn <- c.String(http.StatusConflict, "No permission")
+				return
+			}
+			// Get user data from Redis
+			userData, err := rds.GetRedisData(rdb, fmt.Sprintf("user:%s", username))
+			if err != nil {
+				chRedisReturn <- c.String(http.StatusInternalServerError, fmt.Sprintf("Error getting user data from Redis: %v", err))
+				return
+			}
+
+			// Hash the new password
+			hashedPassword := hashPassword(new_password, []byte(userData["salt"]))
+
+			// Update user data in Redis
+			if err := rdb.HSet(ctx, fmt.Sprintf("user:%s", username), map[string]interface{}{
+				"password_hash": string(hashedPassword),
+				"salt":          userData["salt"],
+			}).Err(); err != nil {
+				chRedisReturn <- c.String(http.StatusInternalServerError, fmt.Sprintf("Error updating user in Redis: %v", err))
+				ch <- false
+
+			}
+
+			c.String(http.StatusOK, "User updated in Redis")
+		}
+
+	}()
+	mu.Unlock()
+	// If the user does not exist in PostgreSQL or Redis
+	return c.String(http.StatusConflict, "Username does not exist in either PostgreSQL or Redis")
+}
+
+func user_delete(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
+	username := c.FormValue("username")
+	password := c.FormValue("password")
+	if username == "" || password == "" {
+		return c.String(http.StatusBadRequest, "Username and password are required")
+	}
 
 	// Check if the user exists in Redis
 	existRedis, err := rds.CheckLoginRedisExists(rdb, username)
 	if err != nil {
-		return err
+		return c.String(http.StatusInternalServerError, "Error checking Redis for user existence")
 	}
 
 	// Check if the user exists in PostgreSQL
 	existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
 	if err != nil {
-		return err
+		return c.String(http.StatusInternalServerError, "Error checking PostgreSQL for user existence")
 	}
 
-	if existRedis {
-		// Check user permissions in Redis
-		user_permission, err := checkRdsUserPermission(ctx, rdb, username, password)
-		if err != nil {
-			return c.String(http.StatusConflict, "Error checking Redis permissions")
-		}
-
-		if !user_permission {
-			return c.String(http.StatusConflict, "No permission")
-		}
-
-		// If the user has permissions, proceed
-		//go timer(psql, rdb)
-		userKey := fmt.Sprintf("user:%s", username)
-
-		// Retrieve user data from Redis
-		user, err := rds.GetRedisData(rdb, userKey)
-		if err != nil {
-			return fmt.Errorf("Error getting user data from Redis: %v", err)
-		}
-		//Стоит сделать соль меняемой!!!!!!!!!!!!!!!!!!!!!
-		// Hash the new password
-		hashedPassword := hashPassword(new_password, []byte(user["salt"]))
-		mu.Lock()
-		// Update user data in Redis
-		if err := rdb.HSet(ctx, userKey, map[string]interface{}{
-			"password_hash": string(hashedPassword),
-			"salt":          user["salt"],
-		}).Err(); err != nil {
-			return fmt.Errorf("Error updating user in Redis: %v", err)
-		}
-
-		// Lock access to user counter and check the limit
-
-		userCount, err := rds.CheckUserCount(rdb)
-		if err != nil {
-			return fmt.Errorf("Error checking user count: %v", err)
-		}
-
-		if userCount >= int(GetParams("MAX_USER_COUNT_BUFFER")) {
-			// If user limit is reached, perform batch insert
-			if err := batchInsertUsers(psql, rdb); err != nil {
-				return fmt.Errorf("Error during batch insert: %v", err)
-			}
-
-			sended = true
-			sended_ch <- true
-			fmt.Println("Batch insert complete")
-		}
-		mu.Unlock()
-		if existPsql {
-			// Check user permissions in PostgreSQL
-			user_permission, err := checkPsqlUserPermission(ctx, psql, username, password)
-			if err != nil {
-				return c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
-			}
-
-			if !user_permission {
-				return c.String(http.StatusConflict, "No permission")
-			}
-			// Retrieve the salt from Redis if available, or define alternative behavior
-			userKey := fmt.Sprintf("user:%s", username)
-			user, err := rds.GetRedisData(rdb, userKey)
-			if err != nil {
-				return fmt.Errorf("Error getting user data from Redis: %v", err)
-			}
-			// Hash the new password
-			hashedPassword := hashPassword(new_password, []byte(user["salt"]))
-
-			// Нужно проверить, что по такие критериям пользователь один!!!!!!!!!!!!!
-
-			// SQL query for updating the row
-			query := "UPDATE users SET password_hash = $1, salt = $2 WHERE username = $3"
-			result, err := psql.Exec(query, hashedPassword, user["salt"], username)
-			if err != nil {
-				return fmt.Errorf("Error updating user in PostgreSQL: %v", err)
-			}
-
-			// Check the number of rows affected
-			rowsAffected, err := result.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("Error checking affected rows: %v", err)
-			}
-
-			if rowsAffected == 0 {
-				return c.String(http.StatusConflict, "No rows were updated, username may not exist")
-			} else if rowsAffected == 1 {
-				return c.String(http.StatusConflict, "No rows were updated, username may not exist")
-			} else if rowsAffected > 1 {
-				return c.String(http.StatusConflict, "No rows were updated, username may not exist")
-			}
-
-			fmt.Println("User updated successfully in PostgreSQL")
-			return c.String(http.StatusOK, "User updated in PostgreSQL")
-		}
-
-		// Return response indicating successful user update in Redis
-		return c.String(http.StatusOK, "User updated in Redis")
-
-	} else if existPsql {
-		// Check user permissions in PostgreSQL
-		user_permission, err := checkPsqlUserPermission(ctx, psql, username, password)
+	// If the user exists in PostgreSQL
+	if existPsql {
+		// Check user permissions
+		userPermission, err := checkPsqlUserPermission(c.Request().Context(), psql, username, password)
 		if err != nil {
 			return c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
 		}
+		if userPermission {
+			// Retrieve user data
+			query := "SELECT salt, password_hash FROM users WHERE username = $1"
+			var salt, passwordHash string
+			err := psql.QueryRow(query, username).Scan(&salt, &passwordHash)
+			if err != nil {
+				return c.String(http.StatusInternalServerError, "Error retrieving user data from PostgreSQL")
+			}
 
-		if !user_permission {
-			return c.String(http.StatusConflict, "No permission")
+			// Return user data
+			return c.JSON(http.StatusOK, map[string]string{
+				"salt":          salt,
+				"password_hash": passwordHash,
+			})
 		}
-
-		// Retrieve the salt from Redis if available, or define alternative behavior
-		userKey := fmt.Sprintf("user:%s", username)
-		user, err := rds.GetRedisData(rdb, userKey)
-		if err != nil {
-			return fmt.Errorf("Error getting user data from Redis: %v", err)
-		}
-
-		// Hash the new password
-		hashedPassword := hashPassword(new_password, []byte(user["salt"]))
-
-		// SQL query for updating the row
-		query := "UPDATE users SET password_hash = $1, salt = $2 WHERE username = $3"
-		result, err := psql.Exec(query, hashedPassword, user["salt"], username)
-		if err != nil {
-			return fmt.Errorf("Error updating user in PostgreSQL: %v", err)
-		}
-
-		// Check the number of rows affected
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("Error checking affected rows: %v", err)
-		}
-
-		if rowsAffected == 0 {
-			return c.String(http.StatusConflict, "No rows were updated, username may not exist")
-		} else if rowsAffected == 1 {
-			return c.String(http.StatusConflict, "No rows were updated, username may not exist")
-		} else if rowsAffected > 1 {
-			return c.String(http.StatusConflict, "No rows were updated, username may not exist")
-		}
-
-		fmt.Println("User updated successfully in PostgreSQL")
-		return c.String(http.StatusOK, "User updated in PostgreSQL")
+		return c.String(http.StatusForbidden, "Access denied")
 	}
 
-	return c.String(http.StatusConflict, "Username does not exist")
+	// If the user exists in Redis
+	if existRedis {
+		// Check user permissions
+		userPermission, err := checkRdsUserPermission(c.Request().Context(), rdb, username, password)
+		if err != nil {
+			return c.String(http.StatusConflict, "Error checking Redis permissions")
+		}
+		if userPermission {
+			// Retrieve data from Redis
+			key := fmt.Sprintf("user:%s", username)
+			data, err := rdb.HGetAll(c.Request().Context(), key).Result()
+			if err != nil {
+				return c.String(http.StatusInternalServerError, "Error retrieving user data from Redis")
+			}
+
+			// Ensure all required fields are present
+			hash, hashExists := data["hash"]
+			salt, saltExists := data["salt"]
+			if !hashExists || !saltExists {
+				return c.String(http.StatusInternalServerError, "Incomplete user data in Redis")
+			}
+
+			// Return user data
+			return c.JSON(http.StatusOK, map[string]string{
+				"hash": hash,
+				"salt": salt,
+			})
+		}
+		return c.String(http.StatusForbidden, "Access denied")
+	}
+
+	// If the user is not found
+	return c.String(http.StatusNotFound, "User not found")
 }
 
-/*func users_list(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
-
+func user_get(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	username := c.FormValue("username")
 	password := c.FormValue("password")
+	if username == "" || password == "" {
+		return c.String(http.StatusBadRequest, "Username and password are required")
+	}
+
+	// Check if the user exists in Redis
 	existRedis, err := rds.CheckLoginRedisExists(rdb, username)
 	if err != nil {
-		return err
+		return c.String(http.StatusInternalServerError, "Error checking Redis for user existence")
 	}
+
+	// Check if the user exists in PostgreSQL
 	existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
 	if err != nil {
-		return err
+		return c.String(http.StatusInternalServerError, "Error checking PostgreSQL for user existence")
 	}
-	if existRedis { userRdsPermission,err:=checkRdsUserPermission(ctx,rdb,username,password)}
-	if existPsql { userPsqlPermission,err:=checkPsqlUserPermission(ctx,psql,username,password)}
 
-
-	if userRdsPermission || userPsqlPermission {
-		usersKeys, err := rdb.GetUserKeys(rdb, "user")
+	// If the user exists in PostgreSQL
+	if existPsql {
+		// Check user permissions
+		userPermission, err := checkPsqlUserPermission(c.Request().Context(), psql, username, password)
 		if err != nil {
-			return err
+			return c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
 		}
+		if userPermission {
+			// Retrieve user data
+			query := "SELECT salt, password_hash FROM users WHERE username = $1"
+			var salt, passwordHash string
+			err := psql.QueryRow(query, username).Scan(&salt, &passwordHash)
+			if err != nil {
+				return c.String(http.StatusInternalServerError, "Error retrieving user data from PostgreSQL")
+			}
 
-		//    return c.JSON(http.StatusOK, items)
-
-		//return fmt.Errorf("Incorrect password for user %s", username)
-
-	} else {
-		return c.String(http.StatusConflict, "Username does not exist")
-
+			// Return user data
+			return c.JSON(http.StatusOK, map[string]string{
+				"salt":          salt,
+				"password_hash": passwordHash,
+			})
+		}
+		return c.String(http.StatusForbidden, "Access denied")
 	}
 
-	return c.String(http.StatusUnauthorized, "Invalid credentials")
-}*/
-
-/*func user_delete(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
-
-	username := c.FormValue("username")
-	password := c.FormValue("password")
-	existRedis, err := rds.CheckLoginRedisExists(rdb, username)
-	if err != nil {
-		return err
-	}
-	existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
-	if err != nil {
-		return err
-	}
-	if existRedis || existPsql {
-
-		userKey := fmt.Sprintf("user:%s", username)
-		salt, err := rdb.HGet(ctx, userKey, "salt").Result()
-
-		if err == redis.Nil {
-
-			return fmt.Errorf("User %s not found", username)
-
-		} else if err != nil {
-
-			return fmt.Errorf("Error retrieving salt from Redis: %v", err)
-
+	// If the user exists in Redis
+	if existRedis {
+		// Check user permissions
+		userPermission, err := checkRdsUserPermission(c.Request().Context(), rdb, username, password)
+		if err != nil {
+			return c.String(http.StatusConflict, "Error checking Redis permissions")
 		}
+		if userPermission {
+			// Retrieve data from Redis
+			key := fmt.Sprintf("user:%s", username)
+			data, err := rdb.HGetAll(c.Request().Context(), key).Result()
+			if err != nil {
+				return c.String(http.StatusInternalServerError, "Error retrieving user data from Redis")
+			}
 
-		saltBytes := []byte(salt)
-		hashedPassword := hashPassword(password, saltBytes)
-		queriedHashedPassword, err := rdb.HGet(ctx, userKey, "password_hash").Result()
+			// Ensure all required fields are present
+			hash, hashExists := data["hash"]
+			salt, saltExists := data["salt"]
+			if !hashExists || !saltExists {
+				return c.String(http.StatusInternalServerError, "Incomplete user data in Redis")
+			}
 
-		if err == redis.Nil {
-			return fmt.Errorf("Password hash not found for user %s", username)
-		} else if err != nil {
-			return fmt.Errorf("Error retrieving password hash from Redis: %v", err)
+			// Return user data
+			return c.JSON(http.StatusOK, map[string]string{
+				"hash": hash,
+				"salt": salt,
+			})
 		}
-
-		if queriedHashedPassword == string(hashedPassword) {
-
-			return nil
-		}
-
-		return fmt.Errorf("Incorrect password for user %s", username)
-
-	} else {
-		return c.String(http.StatusConflict, "Username does not exist")
-
+		return c.String(http.StatusForbidden, "Access denied")
 	}
 
-	return c.String(http.StatusUnauthorized, "Invalid credentials")
-}*/
+	// If the user is not found
+	return c.String(http.StatusNotFound, "User not found")
+}

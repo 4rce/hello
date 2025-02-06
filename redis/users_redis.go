@@ -22,12 +22,6 @@ var (
 
 var ctx = context.Background()
 
-type User struct {
-	Username     string `json:"username"`
-	PasswordHash string `json:"password_hash"`
-	Salt         string `json:"salt"`
-}
-
 func GetParams(param string) int {
 	defaultCount := map[string]int{
 		"MAX_USER_COUNT_BUFFER": 100, // Minimum amount of memory in MB (64 MB is the lowest usable value)
@@ -173,22 +167,3 @@ func GetRedisData(rdb *redis.Client, key string) (map[string]string, error) {
 	}
 	return userData, nil
 }
-
-/*func AddSession(rdb *redis.Client, sessionID string, cookie string) error {
-	err := rdb.Set(ctx, sessionID, cookie, 0).Err()
-	if err != nil {
-		return fmt.Errorf("Error setting session: %v", err)
-	}
-	return nil
-}
-
-func CheckSession(rdb *redis.Client, sessionID string) (string, error) {
-	cookie, err := rdb.Get(ctx, sessionID).Result()
-	if err == redis.Nil {
-		return "", fmt.Errorf("Session not found: %s", sessionID)
-	} else if err != nil {
-		return "", fmt.Errorf("Error retrieving session: %v", err)
-	}
-	return cookie, nil
-}
-*/

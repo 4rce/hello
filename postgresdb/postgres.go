@@ -72,14 +72,9 @@ func ConnectDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func set(db *sql.DB, key string, value string) error {
-	_, err := db.Exec("INSERT INTO key_value_store (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", key, value)
-	return err
-}
-
-func get(db *sql.DB, key string) (string, error) {
+func GetPsqlData(db *sql.DB, key string) (string, error) {
 	var value string
-	err := db.QueryRow("SELECT value FROM key_value_store WHERE key = $1", key).Scan(&value)
+	err := db.QueryRow("SELECT salt, password_hash  FROM users WHERE key = $1", key).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("no value found for key: %s", key)
 	} else if err != nil {

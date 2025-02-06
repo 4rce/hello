@@ -18,30 +18,27 @@ import (
 )
 
 var ctx = context.Background()
-var sended_ch = make(chan bool)
-var sended bool = false
 var mu sync.Mutex
 
-func timer(db *sql.DB, rdb *redis.Client) error {
-
+func timer(ch chan error, sended_ch chan bool, db *sql.DB, rdb *redis.Client) {
 	select {
 	case <-time.After(time.Duration(GetParams("TIMER") * int(time.Second))):
 		mu.Lock()
 		defer mu.Unlock()
-		switch sended {
+		switch <-sended_ch {
 		case false:
 			err := batchInsertUsers(db, rdb)
 			if err != nil {
-				return err // Reminder: Check what to do with the error and consider what to do if the batch is blocked. This may lead to the batch function being stalled.
+				ch <- err // Reminder: Check what to do with the error and consider what to do if the batch is blocked. This may lead to the batch function being stalled.
 			}
 		case true:
-			return nil
+			ch <- nil
 		}
 	case <-sended_ch:
-		return nil
+		ch <- nil
 	}
 	// Return a default error if neither case is satisfied
-	return fmt.Errorf("timer function completed without an expected case being hit")
+	ch <- fmt.Errorf("timer function completed without an expected case being hit")
 
 }
 
@@ -108,6 +105,8 @@ func batchInsertUsers(db *sql.DB, rdb *redis.Client) error {
 		deleteQuery := "DELETE FROM users WHERE username IN (%s)"
 		values := []interface{}{}
 		deleteValues := []string{}
+
+		// Может быть есть ошибка в ключах. Они не парсятся из редисовского стандарта в обычный ключ
 		exist_in_psql, err := batchCheckKeys(db, usersKeys)
 
 		// Iterate over each user key
@@ -198,19 +197,8 @@ func Routing(server *echo.Echo, psql *sql.DB, rdb *redis.Client) {
 		return c.String(http.StatusOK, "Hello, World!")
 	})
 	//server.GET("/user", func(c echo.Context) error { return user_update(c, psql, rdb) })
-	//server.GET("/users", func(c echo.Context) error { return user_update(c, psql, rdb) })
-
-	//server.PUT("/user/id", func(c echo.Context) error { return user_update(c, psql, rdb) })
+	server.GET("/user", func(c echo.Context) error { return user_get(c, psql, rdb) })
+	server.PUT("/user/id", func(c echo.Context) error { return user_update(c, psql, rdb) })
 	server.POST("/user", func(c echo.Context) error { return user_register(c, psql, rdb) })
-
-	/*	server.POST("/batch", func(c echo.Context) error {
-		err := batchInsertUsers(psql, rdb)
-		if err != nil {
-			fmt.Println(err)
-			fmt.Println("Error batch")
-			return err
-		}
-		return c.String(http.StatusUnauthorized, "Batch succesfull")
-	})*/
-
+	server.DELETE("/user", func(c echo.Context) error { return user_delete(c, psql, rdb) })
 }
