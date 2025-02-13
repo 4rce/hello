@@ -13,12 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// type UserData struct {
-// 	Email string
-// 	Hash  string
-// 	Salt  string
-// }
-
 func checkRdsUserPermission(ctx context.Context, rdb *redis.Client, username string, password string) (bool, error) {
 	userKey := fmt.Sprintf("user:%s", username)
 	user, err := rds.GetRedisData(rdb, userKey)
@@ -39,21 +33,21 @@ func checkRdsUserPermission(ctx context.Context, rdb *redis.Client, username str
 }
 
 func checkPsqlUserPermission(ctx context.Context, db *sql.DB, username string, password string) (bool, error) {
-	// Запрос для получения соли и хэша пароля из базы данных
+	// Query to get the salt and password hash from the database
 	var salt string
 	var passwordHash string
 
 	query := "SELECT salt, password_hash FROM users WHERE username = $1"
 	err := db.QueryRow(query, username).Scan(&salt, &passwordHash)
 
-	// Проверяем, существует ли пользователь
+	// Check if the user exists
 	if err == sql.ErrNoRows {
 		return false, fmt.Errorf("User not found")
 	} else if err != nil {
 		return false, fmt.Errorf("Error retrieving user data from PostgreSQL: %v", err)
 	}
 
-	// Проверка хэша пароля
+	// Check the password hash
 	saltBytes := []byte(salt)
 	hashedPassword := hashPassword(password, saltBytes)
 	if bytes.Equal(hashedPassword, []byte(passwordHash)) {
@@ -97,7 +91,7 @@ func user_register(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 
 	existPsql := <-chExistPsql
 	existRedis := <-chExistRedis
-	mu.Unlock()
+	mu.Unlock() //Check if a mutex is needed here, as there might be an issue with the delay where the record could be added while we are checking to ensure there are no such records.
 	if !existPsql && !existRedis {
 		go timer(chErrorTimer, chSended, psql, rdb)
 		salt, err := generateSalt(GetParams("SALT_LEN"))
@@ -132,12 +126,14 @@ func user_register(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	}
 }
 
-// Тут бога нет, есть только две го рутины и один return. Думай как это решить.
+// Тут бога нет, есть только две го рутины и один return.
 func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	username := c.FormValue("username")
 	password := c.FormValue("password")
 	new_password := c.FormValue("new_password")
+	ctx := c.Request().Context()
 	ch := make(chan bool) // Channel for communication between goroutines
+	chError := make(chan error)
 	chPsqlReturn := make(chan error)
 	chRedisReturn := make(chan error)
 	mu.Lock()
@@ -145,15 +141,19 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 	go func() {
 		existPsql, err := postgresdb.CheckLoginPsqlExists(psql, username)
 		if err != nil {
-			ch <- false // Send error information to the channel
-
+			chPsqlReturn <- c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
+			chError <- err
+			fmt.Println("Error:", err)
+			return
 		}
+		chError <- err
 		ch <- existPsql
 		if existPsql {
 			// Check user permissions in PostgreSQL
 			userPermission, err := checkPsqlUserPermission(ctx, psql, username, password)
 			if err != nil {
 				chPsqlReturn <- c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
+				fmt.Println("Error:", err)
 				return
 			}
 			if !userPermission {
@@ -165,6 +165,8 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 			salt := []byte{}
 			salt, err = generateSalt(GetParams("SALT_LEN"))
 			if err != nil {
+				chPsqlReturn <- c.String(http.StatusConflict, "Error with saving the password.")
+				fmt.Println("Error:", err)
 				return
 			}
 
@@ -175,7 +177,9 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 			query := "UPDATE users SET password_hash = $1, salt = $2 WHERE username = $3"
 			_, err = psql.Exec(query, hashedPassword, salt, username)
 			if err != nil {
-				ch <- false
+				fmt.Println("Error:", err)
+				chPsqlReturn <- c.String(http.StatusConflict, "Error with saving the password.")
+				return
 			}
 
 			// Send success message
@@ -188,13 +192,20 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 		// Check if the user exists in Redis
 		existRedis, err := rds.CheckLoginRedisExists(rdb, username)
 		if err != nil {
-
+			chRedisReturn <- c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
+			fmt.Println("Error:", err)
+			return
 		}
 		// Get the existence status from PostgreSQL via the channel
+		errorPsql := <-chError
+		if errorPsql != nil {
+			chRedisReturn <- c.String(http.StatusConflict, "Error with saving the password.")
+			return
+		}
 		existPsql := <-ch
 		if existRedis && existPsql {
 			if err := rdb.Del(ctx, fmt.Sprintf("user:%s", username)).Err(); err != nil {
-				c.String(http.StatusConflict, fmt.Sprintf("Error deleting user data from Redis: %v", err))
+				chRedisReturn <- c.String(http.StatusConflict, fmt.Sprintf("Error deleting user data from Redis: %v", err))
 				return
 			}
 		} else if existRedis && !existPsql {
@@ -229,6 +240,10 @@ func user_update(c echo.Context, psql *sql.DB, rdb *redis.Client) error {
 			}
 
 			c.String(http.StatusOK, "User updated in Redis")
+		} else if !existRedis && !existPsql {
+			chRedisReturn <- c.String(http.StatusConflict, "Error checking PostgreSQL permissions")
+			fmt.Println("User not found")
+			return
 		}
 
 	}()
